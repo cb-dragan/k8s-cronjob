@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: exec-performance-script
+  namespace: cloudbees-core
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: exec-cron
+          restartPolicy: Never
+          volumes:
+            - name: script
+              configMap:
+                name: script-performance
+                defaultMode: 0444
+          containers:
+            - name: runner
+              image: bitnami/kubectl:latest
+              volumeMounts:
+                - name: script
+                  mountPath: /work
+              command: ["/bin/sh","-lc"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  NAMESPACE="cloudbees-core"
+                  LABEL_SELECTOR="tenant=controller-2"
+                  TARGET_CONTAINER="jenkins"
+
+                  LOCAL_SCRIPT="/work/script.sh"
+
+                  POD_NAME="$(kubectl -n "$NAMESPACE" get pods -l "$LABEL_SELECTOR" \
+                    -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\t"}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\n"}{end}{end}' \
+                    | awk '$2=="True"{print $1; exit}')"
+
+                  if [ -z "${POD_NAME:-}" ]; then
+                    echo "No pod found for selector: $LABEL_SELECTOR" >&2
+                    kubectl -n "$NAMESPACE" get pods -l "$LABEL_SELECTOR" -o wide || true
+                    exit 2
+                  fi
+
+                  echo "Selected Jenkins pod: $POD_NAME"
+
+                  # Discover the Java process PID in the container
+                  JAVA_PID="$(kubectl -n "$NAMESPACE" exec "$POD_NAME" -c "$TARGET_CONTAINER" -- /bin/sh -c 'for pid in /proc/[0-9]*; do grep -q java "$pid/cmdline" 2>/dev/null && basename "$pid"; done | sort -n | head -1')"
+
+                  if [ -z "${JAVA_PID:-}" ]; then
+                    echo "No Java process found in pod: $POD_NAME" >&2
+                    exit 3
+                  fi
+
+                  echo "Discovered Java PID: $JAVA_PID"
+                  echo "Streaming $LOCAL_SCRIPT into container '$TARGET_CONTAINER'"
+
+                  # Stream the script to /bin/sh inside the Jenkins container with discovered PID
+                  kubectl -n "$NAMESPACE" exec -i "$POD_NAME" -c "$TARGET_CONTAINER" -- env PERFORMANCE_DATA_OUTPUT_DIR=/tmp /bin/sh -s -- "$JAVA_PID" < "$LOCAL_SCRIPT"
+
