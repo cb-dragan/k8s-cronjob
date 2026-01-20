@@ -46,7 +46,7 @@ kubectl -n cloudbees-core get cronjob exec-performance-script -o wide
 Create a one-time job from the CronJob template to test immediately without waiting 5 minutes:
 
 ```bash
-kubectl -n cloudbees-core create job --from=cronjob/exec-performance-script test-performance-job $(date +%s)
+kubectl -n cloudbees-core create job --from=cronjob/exec-performance-script test-performance-job
 ```
 
 ### Check Output in Jenkins Pod
