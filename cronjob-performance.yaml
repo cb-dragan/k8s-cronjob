@@ -46,20 +46,28 @@ spec:
                     kubectl -n "$NAMESPACE" get pods -l "$LABEL_SELECTOR" -o wide || true
                     exit 2
                   fi
-
                   echo "Selected Jenkins pod: $POD_NAME"
 
                   # Discover the Java process PID in the container
+                  # jps -v | awk '{print $1}' | head -1
                   JAVA_PID="$(kubectl -n "$NAMESPACE" exec "$POD_NAME" -c "$TARGET_CONTAINER" -- /bin/sh -c 'for pid in /proc/[0-9]*; do grep -q java "$pid/cmdline" 2>/dev/null && basename "$pid"; done | sort -n | head -1')"
 
                   if [ -z "${JAVA_PID:-}" ]; then
                     echo "No Java process found in pod: $POD_NAME" >&2
                     exit 3
                   fi
-
                   echo "Discovered Java PID: $JAVA_PID"
-                  echo "Streaming $LOCAL_SCRIPT into container '$TARGET_CONTAINER'"
+
+                  # Download busybox for system utilities (CloudBees CI image lacks the tools)
+                  kubectl -n "$NAMESPACE" exec "$POD_NAME" -c "$TARGET_CONTAINER" -- /bin/sh -c '
+                    if [ ! -f /tmp/busybox ]; then
+                      curl https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox -o /tmp/busybox
+                      chmod +x /tmp/busybox
+                    else
+                      echo "Busybox already available, skipping download"
+                    fi
+                  ' || true
 
                   # Stream the script to /bin/sh inside the Jenkins container with discovered PID
-                  kubectl -n "$NAMESPACE" exec -i "$POD_NAME" -c "$TARGET_CONTAINER" -- env PERFORMANCE_DATA_OUTPUT_DIR=/tmp /bin/sh -s -- "$JAVA_PID" < "$LOCAL_SCRIPT"
+                  kubectl -n "$NAMESPACE" exec -i "$POD_NAME" -c "$TARGET_CONTAINER" -- env PERFORMANCE_DATA_OUTPUT_DIR=/tmp BUSYBOX_PATH=/tmp/busybox /bin/sh -s -- "$JAVA_PID" < "$LOCAL_SCRIPT"
 
